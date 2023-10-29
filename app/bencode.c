@@ -212,7 +212,7 @@ bencode *decode_bencode(const char *bencoded_value) {
   exit(1);
 }
 
-void bencode_print(bencode *b) {
+void bencode_json(bencode *b) {
   switch (b->type) {
   case BENCODE_STRING: {
     printf("\"%s\"", ((bencode_string *)b)->value);
@@ -226,7 +226,7 @@ void bencode_print(bencode *b) {
     printf("[");
     bencode_list *list = (bencode_list *)b;
     for (int i = 0; i < list->length; i++) {
-      bencode_print(list->values[i]);
+      bencode_json(list->values[i]);
       if (i < list->length - 1)
         printf(",");
     }
@@ -238,7 +238,7 @@ void bencode_print(bencode *b) {
     bencode_dict *dict = (bencode_dict *)b;
     for (int i = 0; i < dict->length; i++) {
       printf("\"%s\":", dict->keys[i]);
-      bencode_print(dict->values[i]);
+      bencode_json(dict->values[i]);
       if (i < dict->length - 1)
         printf(",");
     }
@@ -250,4 +250,82 @@ void bencode_print(bencode *b) {
     fprintf(stderr, "invalid bencode");
     return;
   }
+}
+
+size_t bencode_print(bencode *b, char *buffer, size_t size) {
+  switch (b->type) {
+  case BENCODE_STRING: {
+    bencode_string *s = (bencode_string *)b;
+    return snprintf(buffer, size, "%d:%s", s->length, s->value);
+  }
+  case BENCODE_INTEGER: {
+    bencode_integer *i = (bencode_integer *)b;
+    return snprintf(buffer, size, "i%lde", i->value);
+  }
+  case BENCODE_LIST: {
+    int n = 0;
+    n += snprintf(buffer, size - n, "l");
+    bencode_list *list = (bencode_list *)b;
+    for (int i = 0; i < list->length; i++) {
+      n += bencode_print(list->values[i], buffer + n, size - n);
+    }
+    n += snprintf(buffer + n, size - n, "e");
+    return n;
+    break;
+  }
+  case BENCODE_DICT: {
+    int n = 0;
+    n += snprintf(buffer, size - n, "d");
+    bencode_dict *dict = (bencode_dict *)b;
+    for (int i = 0; i < dict->length; i++) {
+      n += snprintf(buffer + n, size - n, "%lu:%s", strlen(dict->keys[i]),
+                    dict->keys[i]);
+#ifdef _DEBUG
+      fprintf(stderr, "key[%d]: %s\n", i, dict->keys[i]);
+#endif
+      n += bencode_print(dict->values[i], buffer + n, size - n);
+    }
+    n += snprintf(buffer + n, size - n, "e");
+    return n;
+    break;
+  }
+
+  default:
+    fprintf(stderr, "invalid bencode");
+    return 0;
+  }
+
+  return 0;
+}
+
+size_t bencode_to_string(bencode *b, char *buffer, size_t size) {
+  switch (b->type) {
+  case BENCODE_STRING: {
+    return snprintf(buffer, size, "%s", ((bencode_string *)b)->value);
+    break;
+  }
+  case BENCODE_INTEGER: {
+    return snprintf(buffer, size, "%ld", ((bencode_integer *)b)->value);
+    break;
+  }
+
+  default:
+    fprintf(stderr, "invalid bencode");
+    return 0;
+  }
+}
+
+bencode *bencode_key(bencode *b, const char *key) {
+  if (!b || b->type != BENCODE_DICT) {
+    return NULL;
+  }
+
+  bencode_dict *dict = (bencode_dict *)b;
+  for (int i = 0; i < dict->length; i++) {
+    if (strcmp(dict->keys[i], key) == 0) {
+      return dict->values[i];
+    }
+  }
+
+  return NULL;
 }
