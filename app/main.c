@@ -71,8 +71,6 @@ int start(int argc, char *argv[]) {
 
     fclose(file);
 
-    hexdump(torrent, bytes_read);
-
     bencode *root = decode_bencode((const char *)torrent);
     assert(root != NULL);
     bencode *annouce = bencode_key(root, "announce");
@@ -103,6 +101,24 @@ int start(int argc, char *argv[]) {
     }
     printf("\n");
 
+    bencode *piece_length = bencode_key(info, "piece length");
+    assert(piece_length != NULL);
+    memset(buffer, 0, BUFFER_SIZE);
+    bencode_to_string(piece_length, buffer, BUFFER_SIZE);
+    printf("Piece Length: %s\n", buffer);
+
+    bencode *pieces = bencode_key(info, "pieces");
+    assert(piece_length != NULL);
+    memset(buffer, 0, BUFFER_SIZE);
+    n = bencode_to_string(pieces, buffer, BUFFER_SIZE);
+    printf("Piece Hashes:");
+    for (int i = 0; i < n; i++) {
+      if (i % SHA_DIGEST_LENGTH == 0)
+        printf("\n");
+      printf("%02x", buffer[i] & 0xff);
+    }
+    printf("\n");
+
     bencode_free(root);
 
     return 0;
@@ -115,6 +131,7 @@ int start(int argc, char *argv[]) {
 int main(int argc, char *argv[]) {
   // fprintf(stderr, "%lu\n", sizeof(char *));
   int errcode = start(argc, argv);
+  fflush(stderr);
   fflush(stdout);
   return errcode;
 }

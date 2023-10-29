@@ -67,7 +67,7 @@ bencode *decode_string_bencode(const char *bencoded_value) {
 
   const char *start = colon_index + 1;
   char *decoded_str = (char *)malloc(len + 1);
-  strncpy(decoded_str, start, len);
+  memcpy(decoded_str, start, len);
   decoded_str[len] = '\0';
 
   bencode_string *result = NULL;
@@ -256,7 +256,10 @@ size_t bencode_print(bencode *b, char *buffer, size_t size) {
   switch (b->type) {
   case BENCODE_STRING: {
     bencode_string *s = (bencode_string *)b;
-    return snprintf(buffer, size, "%d:%s", s->length, s->value);
+    int n = snprintf(buffer, size, "%d:", s->length);
+    assert(size - n > s->length);
+    memcpy(buffer + n, s->value, s->length);
+    return n + s->length;
   }
   case BENCODE_INTEGER: {
     bencode_integer *i = (bencode_integer *)b;
@@ -301,12 +304,13 @@ size_t bencode_print(bencode *b, char *buffer, size_t size) {
 size_t bencode_to_string(bencode *b, char *buffer, size_t size) {
   switch (b->type) {
   case BENCODE_STRING: {
-    return snprintf(buffer, size, "%s", ((bencode_string *)b)->value);
-    break;
+    bencode_string *s = (bencode_string *)b;
+    assert(size > s->length);
+    memcpy(buffer, s->value, s->length);
+    return s->length;
   }
   case BENCODE_INTEGER: {
     return snprintf(buffer, size, "%ld", ((bencode_integer *)b)->value);
-    break;
   }
 
   default:
