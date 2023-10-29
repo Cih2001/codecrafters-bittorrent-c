@@ -10,23 +10,23 @@ void hexdump(const void *buffer, size_t size) {
   const unsigned char *p = (const unsigned char *)buffer;
   size_t i, j;
   for (i = 0; i < size; i += 16) {
-    printf("%08zx ", i);
+    fprintf(stderr, "%08zx ", i);
     for (j = 0; j < 16; j++) {
       if (i + j < size)
-        printf("%02x ", p[i + j]);
+        fprintf(stderr, "%02x ", p[i + j]);
       else
-        printf("   ");
+        fprintf(stderr, "   ");
       if (j % 8 == 7)
-        printf(" ");
+        fprintf(stderr, " ");
     }
-    printf(" ");
+    fprintf(stderr, " ");
     for (j = 0; j < 16; j++) {
       if (i + j < size) {
         unsigned char c = p[i + j];
-        printf("%c", (c >= 32 && c <= 126) ? c : '.');
+        fprintf(stderr, "%c", (c >= 32 && c <= 126) ? c : '.');
       }
     }
-    printf("\n");
+    fprintf(stderr, "\n");
   }
 }
 
@@ -70,6 +70,8 @@ int start(int argc, char *argv[]) {
     }
 
     fclose(file);
+
+    hexdump(torrent, bytes_read);
 
     bencode *root = decode_bencode((const char *)torrent);
     assert(root != NULL);
