@@ -24,3 +24,27 @@ void *f_debug_mem_realloc(void *ptr, unsigned long size, char *file,
           result);
   return result;
 }
+
+void hexdump(const void *buffer, size_t size) {
+  const unsigned char *p = (const unsigned char *)buffer;
+  size_t i, j;
+  for (i = 0; i < size; i += 16) {
+    fprintf(stderr, "%08zx(%p): ", i, i + buffer);
+    for (j = 0; j < 16; j++) {
+      if (i + j < size)
+        fprintf(stderr, "%02x ", p[i + j]);
+      else
+        fprintf(stderr, "   ");
+      if (j % 8 == 7)
+        fprintf(stderr, " ");
+    }
+    fprintf(stderr, " ");
+    for (j = 0; j < 16; j++) {
+      if (i + j < size) {
+        unsigned char c = p[i + j];
+        fprintf(stderr, "%c", (c >= 32 && c <= 126) ? c : '.');
+      }
+    }
+    fprintf(stderr, "\n");
+  }
+}

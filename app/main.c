@@ -1,34 +1,12 @@
 #include "bencode.h"
+#include "debug.h"
+#include "torrent.h"
+#include <arpa/inet.h>
 #include <assert.h>
-#include <openssl/sha.h>
-#include <stdbool.h>
-#include <stdio.h>
+#include <curl/curl.h>
+#include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
-
-void hexdump(const void *buffer, size_t size) {
-  const unsigned char *p = (const unsigned char *)buffer;
-  size_t i, j;
-  for (i = 0; i < size; i += 16) {
-    fprintf(stderr, "%08zx ", i);
-    for (j = 0; j < 16; j++) {
-      if (i + j < size)
-        fprintf(stderr, "%02x ", p[i + j]);
-      else
-        fprintf(stderr, "   ");
-      if (j % 8 == 7)
-        fprintf(stderr, " ");
-    }
-    fprintf(stderr, " ");
-    for (j = 0; j < 16; j++) {
-      if (i + j < size) {
-        unsigned char c = p[i + j];
-        fprintf(stderr, "%c", (c >= 32 && c <= 126) ? c : '.');
-      }
-    }
-    fprintf(stderr, "\n");
-  }
-}
 
 int start(int argc, char *argv[]) {
   if (argc < 3) {
@@ -48,82 +26,82 @@ int start(int argc, char *argv[]) {
   }
 
   if (strcmp(command, "info") == 0) {
-    const char *torrent_file = argv[2];
-    FILE *file = fopen(torrent_file, "r");
-    if (!file) {
-      fprintf(stderr, "Failed to open the file.\n");
-      return 1;
+    THandle h = torrent_open(argv[2]);
+    assert(h);
+
+    TInfo t = {0};
+    int result = torrent_get_info(h, &t);
+    if (result != 0) {
+      torrent_close(h);
+      return result;
     }
 
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    unsigned char *torrent = (unsigned char *)malloc(file_size);
-    assert(torrent != NULL);
-
-    size_t bytes_read = fread(torrent, 1, file_size, file);
-    if (bytes_read != file_size) {
-      fprintf(stderr, "Failed to read file.\n");
-      free(torrent);
-      fclose(file);
-      return 1;
-    }
-
-    fclose(file);
-
-    bencode *root = decode_bencode((const char *)torrent);
-    assert(root != NULL);
-    bencode *annouce = bencode_key(root, "announce");
-    assert(annouce != NULL);
-    bencode *info = bencode_key(root, "info");
-    assert(info != NULL);
-    bencode *length = bencode_key(info, "length");
-    assert(length != NULL);
-
-    const int BUFFER_SIZE = 0x200;
-    char buffer[BUFFER_SIZE];
-    bencode_to_string(annouce, buffer, BUFFER_SIZE);
-    printf("Tracker URL: %s\n", buffer);
-
-    memset(buffer, 0, BUFFER_SIZE);
-    bencode_to_string(length, buffer, BUFFER_SIZE);
-    printf("Length: %s\n", buffer);
-
-    memset(buffer, 0, BUFFER_SIZE);
-    int n = bencode_print(info, buffer, BUFFER_SIZE);
-    fprintf(stderr, "written 0x%x(%d) bytes\n", n, n);
-
-    unsigned char hash[SHA_DIGEST_LENGTH];
-    SHA1((const unsigned char *)buffer, n, hash);
+    printf("Tracker URL: %s\n", t.tracker);
+    printf("Length: %lu\n", t.length);
     printf("Info Hash: ");
-    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
-      printf("%02x", hash[i]);
+    for (int i = 0; i < sizeof(t.info_hash); i++) {
+      printf("%02x", t.info_hash[i]);
     }
-    printf("\n");
+    printf("\nPiece Length: %lu\n", t.piece_length);
+    printf("Piece Hashes:\n");
 
-    bencode *piece_length = bencode_key(info, "piece length");
-    assert(piece_length != NULL);
-    memset(buffer, 0, BUFFER_SIZE);
-    bencode_to_string(piece_length, buffer, BUFFER_SIZE);
-    printf("Piece Length: %s\n", buffer);
+    for (int i = 0; i < t.no_of_piece_hashes; i++) {
+      for (int j = 0; j < sizeof(t.pieces[i]); j++) {
+        printf("%02x", t.pieces[i][j]);
+      }
+      printf("\n");
+    }
 
-    bencode *pieces = bencode_key(info, "pieces");
-    assert(piece_length != NULL);
-    memset(buffer, 0, BUFFER_SIZE);
-    n = bencode_to_string(pieces, buffer, BUFFER_SIZE);
-    printf("Piece Hashes:");
+    free(t.pieces);
+    torrent_close(h);
+
+    return result;
+  }
+
+  if (strcmp(command, "peers") == 0) {
+    THandle h = torrent_open(argv[2]);
+    assert(h);
+
+    TPeers peers = NULL;
+    int n = torrent_get_peers(h, &peers);
+    if (n == -1) {
+      return 1;
+    }
+
     for (int i = 0; i < n; i++) {
-      if (i % SHA_DIGEST_LENGTH == 0)
-        printf("\n");
-      printf("%02x", buffer[i] & 0xff);
+      struct in_addr addr;
+      addr.s_addr = peers[i].ip;
+      printf("%s:%d\n", inet_ntoa(addr), ntohs(peers[i].port));
     }
-    printf("\n");
 
-    bencode_free(root);
-
+    torrent_close(h);
     return 0;
   }
 
+  if (strcmp(command, "handshake") == 0) {
+    if (argc != 4) {
+      fprintf(stderr, "invalid number of arguments\n");
+      return 1;
+    }
+
+    struct in_addr ip;
+    assert(inet_aton(strtok(argv[3], ":"), &ip));
+
+    TPeer peer;
+    peer.ip = ip.s_addr;
+    peer.port = htons(atoi(strtok(NULL, ":")));
+
+    THandle h = torrent_open(argv[2]);
+    assert(h);
+
+    TInfo info = {0};
+    assert(torrent_get_info(h, &info) == 0);
+
+    torrent_do_handshake(h, peer, info.info_hash);
+
+    torrent_close(h);
+    return 1;
+  }
   fprintf(stderr, "Unknown command: %s\n", command);
   return 1;
 }

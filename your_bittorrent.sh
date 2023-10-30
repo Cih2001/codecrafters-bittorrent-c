@@ -7,5 +7,5 @@
 # DON'T EDIT THIS!
 set -e
 tmpFile=$(mktemp)
-gcc -lcurl app/*.c -o $tmpFile -lssl -lcrypto 
+gcc app/*.c -o $tmpFile -lssl -lcrypto -lcurl 
 exec "$tmpFile" "$@"

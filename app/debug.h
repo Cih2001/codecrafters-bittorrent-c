@@ -13,4 +13,6 @@ void *f_debug_mem_realloc(void *ptr, unsigned long size, char *file,
 #else
 #endif /* _DEBUG */
 
+void hexdump(const void *buffer, size_t size);
+
 #endif /* DEBUG_H__ */
