@@ -3,6 +3,8 @@
 
 #define LARGE_BUFFER_SIZE 0x500
 #define SMALL_BUFFER_SIZE 0x200
+#define PIECE_BUFFER_SIZE 1 << 15
+
 #include <openssl/sha.h>
 
 typedef struct {
@@ -39,7 +41,23 @@ typedef TPeer *TPeers;
  */
 int torrent_get_peers(THandle handle, TPeers *result);
 
+/*
+ * torrent_do_handshake performs a handshake with a peer and returns
+ * an open socket descriptor for further communication.
+ *
+ * In case of any error, it will return -1.
+ */
 int torrent_do_handshake(THandle handle, TPeer peer,
-                         uint8_t info_hash[SHA_DIGEST_LENGTH]);
+                         uint8_t info_hash[SHA_DIGEST_LENGTH],
+                         uint8_t (*peer_id)[20]);
+
+/* torrent_download_piece downloads a piece in a torrent file and
+ * returns the number of bytes download. It internally verifies the
+ * hash of the downloaded data.
+ *
+ * In case of any error, it will return -1.
+ */
+int torrent_download_piece(THandle handle, int index, unsigned char *output,
+                           unsigned long output_size);
 
 #endif /* TORRENT_H__ */

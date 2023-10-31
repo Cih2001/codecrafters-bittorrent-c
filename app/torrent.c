@@ -5,11 +5,21 @@
 #include <assert.h>
 #include <curl/curl.h>
 #include <netinet/in.h>
-#include <openssl/sha.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+
+uint32_t ltob(uint32_t n) {
+  uint32_t result = 0;
+  result |= (n >> 24) & 0xff;
+  result |= (n >> 8) & 0xff00;
+  result |= (n << 8) & 0xff0000;
+  result |= (n << 24) & 0xff000000;
+  return result;
+}
 
 int url_encode(char *output, int output_size,
                const unsigned char hash_info[SHA_DIGEST_LENGTH]) {
@@ -156,7 +166,6 @@ int torrent_get_peers(THandle handle, TPeers *result) {
   *result = realloc(*result, size);
   assert(*result);
 
-  hexdump(b_peers, count * 6);
   for (int i = 0; i < count; i++) {
     memcpy(&(*result)[i].ip, &b_peers[i * 6], 4);
     memcpy(&(*result)[i].port, &b_peers[i * 6 + 4], 2);
@@ -168,7 +177,8 @@ int torrent_get_peers(THandle handle, TPeers *result) {
 }
 
 int torrent_do_handshake(THandle handle, TPeer peer,
-                         uint8_t info_hash[SHA_DIGEST_LENGTH]) {
+                         uint8_t info_hash[SHA_DIGEST_LENGTH],
+                         uint8_t (*peer_id)[20]) {
   struct sockaddr_in server_addr;
   char buffer[10];
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -187,12 +197,12 @@ int torrent_do_handshake(THandle handle, TPeer peer,
     return -1;
   }
 
-  struct {
+  struct __attribute__((packed)) {
     uint8_t size;
     uint8_t message[19];
+    uint64_t reserved;
     uint8_t hash[SHA_DIGEST_LENGTH];
     uint8_t peer_id[20];
-    uint64_t reserved;
   } handshake, ack = {0};
 
   handshake.size = 19;
@@ -202,14 +212,118 @@ int torrent_do_handshake(THandle handle, TPeer peer,
 
   int n = send(sockfd, &handshake, sizeof(handshake), 0);
   assert(n == sizeof(handshake));
-  fprintf(stderr, "wrote %d bytes\n", n);
 
   n = recv(sockfd, &ack, sizeof(ack), 0);
   if (n == -1) {
     fprintf(stderr, "error reading peer handshake");
     return -1;
   }
+  assert(n == sizeof(ack));
 
-  hexdump(&ack, sizeof(ack));
-  return 0;
+  memcpy(peer_id, ack.peer_id, sizeof(*peer_id));
+
+  return sockfd;
 }
+
+int torrent_download_piece(THandle handle, int index, unsigned char *output,
+                           unsigned long output_size) {
+  TInfo info = {0};
+  torrent_get_info(handle, &info);
+
+  if (info.piece_length > output_size) {
+    fprintf(stderr, "not enough space in the output buffer\n");
+    return -1;
+  }
+
+  TPeers peers = NULL;
+  int n = torrent_get_peers(handle, &peers);
+  if (n <= 0) {
+    fprintf(stderr, "no peers to download from or an error\n");
+    return -1;
+  }
+
+  uint8_t peer_id[20];
+  int sockfd = torrent_do_handshake(handle, peers[0], info.info_hash, &peer_id);
+
+  unsigned char buffer[SMALL_BUFFER_SIZE] = {0};
+  n = recv(sockfd, &buffer, SMALL_BUFFER_SIZE, 0);
+  if (n == -1) {
+    fprintf(stderr, "error reading bit field message\n");
+    return -1;
+  }
+
+  peer_message *bitfield = (peer_message *)buffer;
+  if (bitfield->id != MSG_BITFIELD) {
+    fprintf(stderr, "unexpect peer message\n");
+    return -1;
+  }
+
+  memset(buffer, 0, SMALL_BUFFER_SIZE);
+  peer_message *interest = (peer_message *)buffer;
+  int len = 1;
+  interest->length = ltob(len);
+  interest->id = MSG_INTERESTED;
+  n = send(sockfd, buffer, 4 + len, 0);
+  assert(n == 4 + len);
+
+  memset(buffer, 0, SMALL_BUFFER_SIZE);
+  n = recv(sockfd, &buffer, SMALL_BUFFER_SIZE, 0);
+  if (n == -1) {
+    fprintf(stderr, "error reading unchock message");
+    return -1;
+  }
+
+  peer_message *unchock = (peer_message *)buffer;
+  assert(bitfield->id == MSG_UNCHOCK);
+
+  assert(info.no_of_piece_hashes > 0);
+
+  int request_size = 1 << 14;
+  unsigned char piece_buffer[PIECE_BUFFER_SIZE] = {0};
+  unsigned long chunk_length = 0;
+
+  for (unsigned long i = 0; i < info.piece_length; i += request_size) {
+    memset(buffer, 0, SMALL_BUFFER_SIZE);
+    peer_message *request = (peer_message *)buffer;
+    len = 1 + sizeof(piece_request);
+    request->length = ltob(len);
+    request->id = MSG_REQUEST;
+
+    piece_request *piece = (piece_request *)&request->payload;
+    piece->index = ltob(index);
+    piece->begin = ltob(i);
+
+    chunk_length = info.piece_length - i;
+    if (chunk_length > request_size) {
+      chunk_length = request_size;
+    }
+    piece->length = ltob(chunk_length);
+
+    n = send(sockfd, buffer, 4 + len, 0);
+    assert(n == 4 + len);
+
+    memset(piece_buffer, 0, PIECE_BUFFER_SIZE);
+    n = recv(sockfd, piece_buffer, 4, MSG_WAITALL);
+    len = ltob(((peer_message *)piece_buffer)->length);
+    n = recv(sockfd, piece_buffer + 4, len, MSG_WAITALL);
+
+    peer_message *message = (peer_message *)piece_buffer;
+    assert(message->id == MSG_PIECE);
+
+    piece_response *response = (piece_response *)&message->payload;
+    assert(ltob(response->begin) == i);
+    assert(ltob(response->index) == index);
+
+    memcpy(output + i, &response->data, chunk_length);
+  }
+
+  unsigned char recieved_data_hash[SHA_DIGEST_LENGTH];
+  SHA1((const unsigned char *)output, info.piece_length, recieved_data_hash);
+
+  if (memcmp(info.pieces[index], recieved_data_hash, SHA_DIGEST_LENGTH) != 0) {
+    fprintf(stderr, "piece hash does not match\n");
+    return -1;
+  }
+
+  return info.piece_length;
+};
