@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 uint32_t ltob(uint32_t n) {
   uint32_t result = 0;
@@ -42,12 +43,17 @@ THandle torrent_open(const char *torrent_file_path) {
   fseek(file, 0, SEEK_END);
   long file_size = ftell(file);
   fseek(file, 0, SEEK_SET);
-  THandle torrent = (unsigned char *)malloc(file_size);
-  assert(torrent != NULL);
+  THandle torrent = (THandle)malloc(sizeof(*torrent));
+  assert(torrent);
+  memset(torrent, 0, sizeof(*torrent));
 
-  size_t bytes_read = fread(torrent, 1, file_size, file);
+  torrent->torrent_file = malloc(file_size);
+  assert(torrent->torrent_file);
+
+  size_t bytes_read = fread(torrent->torrent_file, 1, file_size, file);
   if (bytes_read != file_size) {
     fprintf(stderr, "Failed to read file.\n");
+    free(torrent->torrent_file);
     free(torrent);
     fclose(file);
     return NULL;
@@ -57,10 +63,16 @@ THandle torrent_open(const char *torrent_file_path) {
   return torrent;
 };
 
-void torrent_close(THandle handle) { free(handle); }
+void torrent_close(THandle handle) {
+  if (handle->socketfd > 0) {
+    close(handle->socketfd);
+  }
+  free(handle->torrent_file);
+  free(handle);
+}
 
 int torrent_get_info(THandle handle, TInfo *result) {
-  bencode *root = decode_bencode((const char *)handle);
+  bencode *root = decode_bencode(handle->torrent_file);
   assert(root != NULL);
   bencode *annouce = bencode_key(root, "announce");
   assert(annouce != NULL);
@@ -179,8 +191,12 @@ int torrent_get_peers(THandle handle, TPeers *result) {
 int torrent_do_handshake(THandle handle, TPeer peer,
                          uint8_t info_hash[SHA_DIGEST_LENGTH],
                          uint8_t (*peer_id)[20]) {
+  if (handle->socketfd > 0) {
+    fprintf(stderr, "handshake already done\n");
+    return -1;
+  }
+
   struct sockaddr_in server_addr;
-  char buffer[10];
   int sockfd = socket(AF_INET, SOCK_STREAM, 0);
   if (sockfd == -1) {
     perror("socket");
@@ -222,11 +238,48 @@ int torrent_do_handshake(THandle handle, TPeer peer,
 
   memcpy(peer_id, ack.peer_id, sizeof(*peer_id));
 
-  return sockfd;
+  handle->socketfd = sockfd;
+
+  return 0;
 }
 
-int torrent_download_piece(THandle handle, int index, unsigned char *output,
-                           unsigned long output_size) {
+int torrent_declare_interest(THandle handle) {
+  unsigned char buffer[SMALL_BUFFER_SIZE] = {0};
+
+  int n = recv(handle->socketfd, &buffer, SMALL_BUFFER_SIZE, 0);
+  if (n == -1) {
+    fprintf(stderr, "error reading bit field message\n");
+    return -1;
+  }
+
+  peer_message *bitfield = (peer_message *)buffer;
+  if (bitfield->id != MSG_BITFIELD) {
+    fprintf(stderr, "unexpect peer message\n");
+    return -1;
+  }
+
+  peer_message *interest = (peer_message *)buffer;
+  int len = 1;
+  interest->length = ltob(len);
+  interest->id = MSG_INTERESTED;
+  n = send(handle->socketfd, buffer, 4 + len, 0);
+  assert(n == 4 + len);
+
+  memset(buffer, 0, SMALL_BUFFER_SIZE);
+  n = recv(handle->socketfd, &buffer, SMALL_BUFFER_SIZE, 0);
+  if (n == -1) {
+    fprintf(stderr, "error reading unchock message");
+    return -1;
+  }
+
+  peer_message *unchock = (peer_message *)buffer;
+  assert(unchock->id == MSG_UNCHOCK);
+
+  return 0;
+}
+
+int torrent_download_piece(THandle handle, TPeer peer, int index,
+                           unsigned char *output, unsigned long output_size) {
   TInfo info = {0};
   torrent_get_info(handle, &info);
 
@@ -241,49 +294,9 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
     return -1;
   }
 
-  TPeers peers = NULL;
-  int n = torrent_get_peers(handle, &peers);
-  if (n <= 0) {
-    fprintf(stderr, "no peers to download from or an error\n");
-    return -1;
-  }
-
-  uint8_t peer_id[20];
-  int sockfd = torrent_do_handshake(handle, peers[0], info.info_hash, &peer_id);
-
-  unsigned char buffer[SMALL_BUFFER_SIZE] = {0};
-  n = recv(sockfd, &buffer, SMALL_BUFFER_SIZE, 0);
-  if (n == -1) {
-    fprintf(stderr, "error reading bit field message\n");
-    return -1;
-  }
-
-  peer_message *bitfield = (peer_message *)buffer;
-  if (bitfield->id != MSG_BITFIELD) {
-    fprintf(stderr, "unexpect peer message\n");
-    return -1;
-  }
-
-  memset(buffer, 0, SMALL_BUFFER_SIZE);
-  peer_message *interest = (peer_message *)buffer;
-  int len = 1;
-  interest->length = ltob(len);
-  interest->id = MSG_INTERESTED;
-  n = send(sockfd, buffer, 4 + len, 0);
-  assert(n == 4 + len);
-
-  memset(buffer, 0, SMALL_BUFFER_SIZE);
-  n = recv(sockfd, &buffer, SMALL_BUFFER_SIZE, 0);
-  if (n == -1) {
-    fprintf(stderr, "error reading unchock message");
-    return -1;
-  }
-
-  peer_message *unchock = (peer_message *)buffer;
-  assert(bitfield->id == MSG_UNCHOCK);
-
   assert(info.no_of_piece_hashes > 0);
 
+  unsigned char buffer[SMALL_BUFFER_SIZE] = {0};
   unsigned long request_size = 1 << 14;
   unsigned char piece_buffer[PIECE_BUFFER_SIZE] = {0};
   signed long chunk_length = 0;
@@ -291,7 +304,7 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
   for (unsigned long i = 0; i < piece_length; i += request_size) {
     memset(buffer, 0, SMALL_BUFFER_SIZE);
     peer_message *request = (peer_message *)buffer;
-    len = 1 + sizeof(piece_request);
+    int len = 1 + sizeof(piece_request);
     request->length = ltob(len);
     request->id = MSG_REQUEST;
 
@@ -305,17 +318,17 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
     }
     piece->length = ltob(chunk_length);
 
-    n = send(sockfd, buffer, 4 + len, 0);
+    int n = send(handle->socketfd, buffer, 4 + len, 0);
     assert(n == 4 + len);
 
     memset(piece_buffer, 0, PIECE_BUFFER_SIZE);
-    n = recv(sockfd, piece_buffer, 4, MSG_WAITALL);
+    n = recv(handle->socketfd, piece_buffer, 4, MSG_WAITALL);
     if (n == -1) {
       perror("error reciving data\n");
       return -1;
     }
     len = ltob(((peer_message *)piece_buffer)->length);
-    n = recv(sockfd, piece_buffer + 4, len, MSG_WAITALL);
+    n = recv(handle->socketfd, piece_buffer + 4, len, MSG_WAITALL);
     if (n == -1) {
       perror("error reciving data\n");
       return -1;
@@ -343,3 +356,40 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
 
   return piece_length;
 };
+
+int torrent_download(THandle handle, unsigned char *output,
+                     unsigned long output_size) {
+  TInfo info = {0};
+  torrent_get_info(handle, &info);
+
+  if (info.length > output_size) {
+    fprintf(stderr, "not enough space in the output buffer\n");
+    return -1;
+  }
+
+  TPeers peers = NULL;
+  int n = torrent_get_peers(handle, &peers);
+  if (n <= 0) {
+    fprintf(stderr, "no peers to download from or an error\n");
+    return -1;
+  }
+
+  uint8_t peer_id[20];
+  assert(torrent_do_handshake(handle, peers[0], info.info_hash, &peer_id) !=
+         -1);
+
+  assert(torrent_declare_interest(handle) != -1);
+
+  for (int i = 0; i < info.no_of_piece_hashes; i++) {
+    fprintf(stderr, "downloading piece %d\n", i);
+    int n = torrent_download_piece(handle, peers[0], i,
+                                   output + (i * info.piece_length),
+                                   output_size - (i * info.piece_length));
+    if (n < 0) {
+      fprintf(stderr, "error downloading piece %d\n", i);
+      return -1;
+    }
+  }
+
+  return info.length;
+}

@@ -142,7 +142,21 @@ int start(int argc, char *argv[]) {
 
     int index = atoi(argv[5]);
 
-    int n = torrent_download_piece(h, index, buffer, buffer_size);
+    TInfo info = {0};
+    torrent_get_info(h, &info);
+
+    TPeers peers = NULL;
+    int n = torrent_get_peers(h, &peers);
+    if (n <= 0) {
+      fprintf(stderr, "no peers to download from or an error\n");
+      return -1;
+    }
+
+    uint8_t peer_id[20];
+    assert(torrent_do_handshake(h, peers[0], info.info_hash, &peer_id) != -1);
+    assert(torrent_declare_interest(h) != -1);
+
+    n = torrent_download_piece(h, peers[0], index, buffer, buffer_size);
     assert(n > 0);
 
     int fd = open(output_file, O_RDWR | O_CREAT, 0644);
@@ -155,6 +169,34 @@ int start(int argc, char *argv[]) {
 
     close(fd);
 
+    torrent_close(h);
+    return 0;
+  }
+
+  if (strcmp(command, "download") == 0) {
+    char *output_file = argv[3];
+    char *torrent_file = argv[4];
+
+    THandle h = torrent_open(torrent_file);
+    assert(h);
+
+    TInfo info = {0};
+    torrent_get_info(h, &info);
+
+    unsigned char *buffer = malloc(info.length + 1);
+
+    int n = torrent_download(h, buffer, info.length);
+    assert(n > 0);
+
+    int fd = open(output_file, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+      perror("error opening output_file");
+      return 1;
+    }
+
+    write(fd, buffer, n);
+
+    close(fd);
     torrent_close(h);
     return 0;
   }

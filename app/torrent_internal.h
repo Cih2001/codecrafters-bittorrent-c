@@ -4,7 +4,10 @@
 #include <openssl/sha.h>
 #include <stdint.h>
 
-typedef unsigned char *THandle;
+typedef struct {
+  int socketfd;
+  char *torrent_file;
+} *THandle;
 
 enum message_ids {
   MSG_UNCHOCK = 1,
