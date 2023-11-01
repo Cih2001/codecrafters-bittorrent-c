@@ -230,7 +230,13 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
   TInfo info = {0};
   torrent_get_info(handle, &info);
 
-  if (info.piece_length > output_size) {
+  unsigned long piece_length = info.piece_length;
+  unsigned long remainder = info.length % piece_length;
+  if (remainder > 0 && index == info.no_of_piece_hashes - 1) {
+    piece_length = remainder;
+  }
+
+  if (piece_length > output_size) {
     fprintf(stderr, "not enough space in the output buffer\n");
     return -1;
   }
@@ -278,11 +284,11 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
 
   assert(info.no_of_piece_hashes > 0);
 
-  int request_size = 1 << 14;
+  unsigned long request_size = 1 << 14;
   unsigned char piece_buffer[PIECE_BUFFER_SIZE] = {0};
-  unsigned long chunk_length = 0;
+  signed long chunk_length = 0;
 
-  for (unsigned long i = 0; i < info.piece_length; i += request_size) {
+  for (unsigned long i = 0; i < piece_length; i += request_size) {
     memset(buffer, 0, SMALL_BUFFER_SIZE);
     peer_message *request = (peer_message *)buffer;
     len = 1 + sizeof(piece_request);
@@ -293,7 +299,7 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
     piece->index = ltob(index);
     piece->begin = ltob(i);
 
-    chunk_length = info.piece_length - i;
+    chunk_length = piece_length - i;
     if (chunk_length > request_size) {
       chunk_length = request_size;
     }
@@ -304,11 +310,21 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
 
     memset(piece_buffer, 0, PIECE_BUFFER_SIZE);
     n = recv(sockfd, piece_buffer, 4, MSG_WAITALL);
+    if (n == -1) {
+      perror("error reciving data\n");
+      return -1;
+    }
     len = ltob(((peer_message *)piece_buffer)->length);
     n = recv(sockfd, piece_buffer + 4, len, MSG_WAITALL);
+    if (n == -1) {
+      perror("error reciving data\n");
+      return -1;
+    }
 
     peer_message *message = (peer_message *)piece_buffer;
-    assert(message->id == MSG_PIECE);
+    if (message->id != MSG_PIECE) {
+      return -1;
+    };
 
     piece_response *response = (piece_response *)&message->payload;
     assert(ltob(response->begin) == i);
@@ -318,12 +334,12 @@ int torrent_download_piece(THandle handle, int index, unsigned char *output,
   }
 
   unsigned char recieved_data_hash[SHA_DIGEST_LENGTH];
-  SHA1((const unsigned char *)output, info.piece_length, recieved_data_hash);
+  SHA1((const unsigned char *)output, piece_length, recieved_data_hash);
 
   if (memcmp(info.pieces[index], recieved_data_hash, SHA_DIGEST_LENGTH) != 0) {
     fprintf(stderr, "piece hash does not match\n");
     return -1;
   }
 
-  return info.piece_length;
+  return piece_length;
 };

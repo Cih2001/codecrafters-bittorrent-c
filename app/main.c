@@ -18,40 +18,15 @@ int start(int argc, char *argv[]) {
   }
 
   int opt;
-  char *command = NULL;
-  char *output_file = NULL;
-  char *torrent_file = NULL;
-  // Process command-line options
-  while ((opt = getopt(argc, argv, "o:")) != -1) {
-    switch (opt) {
-    case 'o':
-      output_file = optarg;
-      break;
-    default:
-      fprintf(stderr, "Usage: %s <command> <args>\n", argv[0]);
-      return 1;
-    }
-  }
-  // Access non-option arguments
-  if (optind < argc) {
-    command = argv[optind++];
-  }
-  if (optind < argc) {
-    torrent_file = argv[optind++];
-  }
+  char *command = argv[1];
   // Validate the command and options
-  if (command == NULL || torrent_file == NULL) {
+  if (command == NULL) {
     fprintf(stderr, "Usage: %s main.o <cmd> [-o output] file_name\n", argv[0]);
     return 1;
   }
 
-  if (strcmp(command, "download_piece") == 0 && output_file == NULL) {
-    fprintf(stderr, "Usage: %s <command> <args>\n", argv[0]);
-    return 1;
-  }
-  // Use the parsed
-
   if (strcmp(command, "decode") == 0) {
+    char *torrent_file = argv[2];
     const char *encoded_str = torrent_file;
     bencode *b = decode_bencode(encoded_str);
     bencode_json(b);
@@ -61,6 +36,7 @@ int start(int argc, char *argv[]) {
   }
 
   if (strcmp(command, "info") == 0) {
+    char *torrent_file = argv[2];
     THandle h = torrent_open(torrent_file);
     assert(h);
 
@@ -94,6 +70,7 @@ int start(int argc, char *argv[]) {
   }
 
   if (strcmp(command, "peers") == 0) {
+    char *torrent_file = argv[2];
     THandle h = torrent_open(torrent_file);
     assert(h);
 
@@ -119,11 +96,7 @@ int start(int argc, char *argv[]) {
       return 1;
     }
 
-    if (optind >= argc) {
-      fprintf(stderr, "Usage: %s <handshake> <torrent_file> <ip:port>\n",
-              argv[0]);
-    }
-    char *peer_addr = argv[optind++];
+    char *peer_addr = argv[3];
 
     struct in_addr ip;
     assert(inet_aton(strtok(peer_addr, ":"), &ip));
@@ -132,6 +105,7 @@ int start(int argc, char *argv[]) {
     peer.ip = ip.s_addr;
     peer.port = htons(atoi(strtok(NULL, ":")));
 
+    char *torrent_file = argv[2];
     THandle h = torrent_open(torrent_file);
     assert(h);
 
@@ -139,7 +113,7 @@ int start(int argc, char *argv[]) {
     assert(torrent_get_info(h, &info) == 0);
 
     uint8_t peer_id[20];
-    assert(torrent_do_handshake(h, peer, info.info_hash, &peer_id) == 0);
+    assert(torrent_do_handshake(h, peer, info.info_hash, &peer_id) != -1);
 
     printf("Peer ID: ");
     for (int i = 0; i < 20; i++) {
@@ -152,15 +126,24 @@ int start(int argc, char *argv[]) {
   }
 
   if (strcmp(command, "download_piece") == 0) {
+    if (argc != 6) {
+      fprintf(stderr, "invalid number of arguments\n");
+      return 1;
+    }
+
+    char *torrent_file = argv[4];
     THandle h = torrent_open(torrent_file);
     assert(h);
 
-    long buffer_size = 1 << 16;
+    long buffer_size = 1 << 20;
     unsigned char buffer[buffer_size];
-    int n = torrent_download_piece(h, 0, buffer, buffer_size);
-    assert(n > 0);
 
-    printf("%s\n", output_file);
+    char *output_file = argv[3];
+
+    int index = atoi(argv[5]);
+
+    int n = torrent_download_piece(h, index, buffer, buffer_size);
+    assert(n > 0);
 
     int fd = open(output_file, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
@@ -175,6 +158,7 @@ int start(int argc, char *argv[]) {
     torrent_close(h);
     return 0;
   }
+
   fprintf(stderr, "Unknown command: %s\n", command);
   return 1;
 }

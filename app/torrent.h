@@ -51,7 +51,8 @@ int torrent_do_handshake(THandle handle, TPeer peer,
                          uint8_t info_hash[SHA_DIGEST_LENGTH],
                          uint8_t (*peer_id)[20]);
 
-/* torrent_download_piece downloads a piece in a torrent file and
+/*
+ * torrent_download_piece downloads a piece in a torrent file and
  * returns the number of bytes download. It internally verifies the
  * hash of the downloaded data.
  *
